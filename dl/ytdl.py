@@ -75,16 +75,26 @@ async def search_api(query, is_videoId=False, video=False):
                 f"{API_URL}download/{'ytmp4' if video else 'ytmp3'}?url=https://youtube.com/watch?v="
                 + query
             ) as resp:
-                data = await resp.json()
-            if data["success"]:
+                if resp.status != 200:
+                    return None, None, None
+                try:
+                    data = await resp.json(content_type=None)
+                except Exception:
+                    return None, None, None
+            if data and data.get("success"):
                 title = data["result"]["title"]
                 thumb_url = data["result"]["thumbnail"]
                 link = data["result"]["download_url"]
                 return title, thumb_url, link
         else:
             async with session.get(f"{API_URL}song?query=" + query) as resp:
-                data = await resp.json()
-            if data["status"]:
+                if resp.status != 200:
+                    return None, None, None
+                try:
+                    data = await resp.json(content_type=None)
+                except Exception:
+                    return None, None, None
+            if data and data.get("status"):
                 result = data["result"]
                 if result:
                     title = result["title"]
