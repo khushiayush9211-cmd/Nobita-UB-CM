@@ -1,4 +1,5 @@
 import os
+import shutil
 import time
 from io import BytesIO
 
@@ -18,9 +19,19 @@ from yt_dlp.utils import DownloadError, ExtractorError
 from utils import modules_help, prefix
 
 COOKIES_FILE = "/etc/secrets/www.youtube.com_cookies.txt"
+WRITABLE_COOKIES = "/tmp/youtube_cookies.txt"
+
+# Copy cookies to a writable location at startup (so yt-dlp can save updates)
+if os.path.exists(COOKIES_FILE):
+    try:
+        shutil.copy(COOKIES_FILE, WRITABLE_COOKIES)
+    except Exception:
+        WRITABLE_COOKIES = None
+else:
+    WRITABLE_COOKIES = None
 
 ydv_opts = {
-    "format": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+    "format": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
     "geo_bypass": True,
     "nocheckcertificate": True,
     "addmetadata": True,
@@ -38,10 +49,10 @@ ydm_opts = {
     "outtmpl": "downloads/ytdl/audios/%(title)s.%(ext)s",
 }
 
-# Only add cookiefile if it actually exists (avoids errors if not set up on Render yet)
-if os.path.exists(COOKIES_FILE):
-    ydv_opts["cookiefile"] = COOKIES_FILE
-    ydm_opts["cookiefile"] = COOKIES_FILE
+# Only add cookiefile if the writable copy exists
+if WRITABLE_COOKIES and os.path.exists(WRITABLE_COOKIES):
+    ydv_opts["cookiefile"] = WRITABLE_COOKIES
+    ydm_opts["cookiefile"] = WRITABLE_COOKIES
 
 API_URL = "https://apis.davidcyriltech.my.id/"
 
