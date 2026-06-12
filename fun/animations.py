@@ -103,8 +103,8 @@ async def wtf(_, message: Message):
         "What",
         "What The",
         "What The F",
-        "What The F Brah",
-        "What The F Brah\nhttps://telegra.ph//file/f3b760e4a99340d331f9b.jpg",
+        "What The Fu*k",
+        "What The Fu*k\nhttps://telegra.ph//file/f3b760e4a99340d331f9b.jpg",
     ]
     for i in animation_ttl:
         await asyncio.sleep(animation_interval)
@@ -187,7 +187,7 @@ async def gangster(_, message: Message):
 async def timer_blankx(_, message: Message):
     txt = (
         message.text[10:]
-        + "\n\n<b>Tesla Wireless Charging (beta) Started...\nDevice Detected: Apple iPad 13\nBattery Percentage:</b> "
+        + "\n\n<b>Tesla Wireless Charging (beta) Started...\nDevice Detected: Sunstone\nBattery Percentage:</b> "
     )
     j = 10
     k = j
@@ -219,7 +219,7 @@ async def kill(_, message: Message):
         "------------------>",
         "------>;(^。^)ノ",
         "(￣ー￣) DED",
-        "<b>Target killed successfully (°̥̥̥̥̥̥̥̥•̀.̫•́°̥̥̥̥̥̥̥)</b>",
+        "<b>Target killed successfully (^⁠_⁠^)</b>",
     ]
 
     await message.edit_text("You're goonnaa diieeeee!")
