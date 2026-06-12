@@ -154,6 +154,7 @@ utils/shift
 utils/similarsites
 utils/stickertools
 utils/tagall
+utils/telegraph
 utils/texttools
 utils/time
 utils/translator
