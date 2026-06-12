@@ -7,13 +7,13 @@ from pyrogram.types import Message
 from utils import modules_help, prefix
 
 
-@Client.on_message(filters.command(["tph", "telegraph"], prefix) & filters.me)
+@Client.on_message(filters.command(["tph", "telegraph", "catbox"], prefix) & filters.me)
 async def telegraph_upload(_, message: Message):
     reply = message.reply_to_message
 
-    if not reply or not (reply.photo or reply.document):
+    if not reply or not (reply.photo or reply.document or reply.video):
         return await message.edit(
-            f"<b>Reply to an image with {prefix}tph</b>"
+            f"<b>Reply to a media file with {prefix}tph</b>"
         )
 
     status = await message.edit("<b>Downloading...</b>")
@@ -22,29 +22,28 @@ async def telegraph_upload(_, message: Message):
     try:
         file_path = await reply.download()
 
-        await status.edit("<b>Uploading to Telegraph...</b>")
+        await status.edit("<b>Uploading...</b>")
+
+        filename = os.path.basename(file_path)
 
         with open(file_path, "rb") as f:
             file_bytes = f.read()
 
-        filename = os.path.basename(file_path)
-
         async with aiohttp.ClientSession() as session:
             form = aiohttp.FormData()
-            form.add_field("file", file_bytes, filename=filename)
+            form.add_field("reqtype", "fileupload")
+            form.add_field("fileToUpload", file_bytes, filename=filename)
 
-            async with session.post("https://telegra.ph/upload", data=form) as resp:
-                result = await resp.json()
+            async with session.post("https://catbox.moe/user/api.php", data=form) as resp:
+                result = (await resp.text()).strip()
 
-        if not isinstance(result, list):
+        if not result.startswith("http"):
             return await status.edit(
                 f"<b>Upload failed:</b>\n<code>{result}</code>"
             )
 
-        url = "https://telegra.ph" + result[0]["src"]
-
         await status.edit(
-            f"<b>Telegraph URL:</b>\n<code>{url}</code>"
+            f"<b>URL:</b>\n<code>{result}</code>"
         )
 
     except Exception as e:
@@ -58,5 +57,5 @@ async def telegraph_upload(_, message: Message):
 
 
 modules_help["telegraph"] = {
-    "tph, telegraph [reply image]": "Upload image to Telegraph",
+    "tph, telegraph, catbox [reply media]": "Upload media to Catbox",
 }
