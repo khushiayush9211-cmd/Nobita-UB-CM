@@ -18,7 +18,7 @@ from yt_dlp.utils import DownloadError, ExtractorError
 from utils import modules_help, prefix
 
 ydv_opts = {
-    "format": "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+    "format": "bv[ext=mp4]+ba/bv*+ba/b[ext=mp4]/b",
     "geo_bypass": True,
     "nocheckcertificate": True,
     "addmetadata": True,
