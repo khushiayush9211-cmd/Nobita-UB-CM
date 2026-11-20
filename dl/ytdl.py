@@ -1,29 +1,33 @@
+import asyncio
 import os
+import re
+import shutil
 import time
+import uuid
 from io import BytesIO
+from urllib.parse import parse_qs, urlparse
 
 import aiohttp
 from pyrogram import Client, filters
 from pyrogram.types import Message
-from utils.scripts import import_library
+from utils import modules_help, prefix
+from utils.scripts import format_exc, import_library, progress, resize_image
 
 yt_dlp = import_library("yt_dlp", "yt-dlp")
-
-from urllib.parse import parse_qs, urlparse
-
-from utils.scripts import format_exc, progress, resize_image
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError, ExtractorError
 
-from utils import modules_help, prefix
+BASE_DIR = "downloads/ytdl"
 
 ydv_opts = {
-    "format": "bv[ext=mp4]+ba/bv*+ba/b[ext=mp4]/b",
+    "format": "bv[height<=1440][ext=mp4]+ba/bv*[height<=1440]+ba/b[height<=1440][ext=mp4]/b[height<=1440]",
+    "merge_output_format": "mp4",
+    "default_search": "ytsearch",
     "geo_bypass": True,
     "nocheckcertificate": True,
     "addmetadata": True,
     "noplaylist": True,
-    "outtmpl": "downloads/ytdl/videos/%(id)s.%(ext)s",
+    "quiet": True,
 }
 
 ydm_opts = {
@@ -33,167 +37,194 @@ ydm_opts = {
     "nocheckcertificate": True,
     "addmetadata": True,
     "noplaylist": True,
-    "outtmpl": "downloads/ytdl/audios/%(title)s.%(ext)s",
+    "quiet": True,
+    "postprocessors": [
+        {
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "192",
+        }
+    ],
 }
 
-API_URL = "https://apis.davidcyriltech.my.id/"
+API_URL = "https://davidcyriltech.my.id/"
+
+
+# ---------------------------------------------------------------- helpers
+def safe_name(name):
+    name = re.sub(r'[\\/:*?"<>|\n\r\t]', "_", str(name or "file")).strip()
+    return name[:100] or "file"
 
 
 def extract_video_id(url):
-    parsed_url = urlparse(url)
-    if parsed_url.hostname == "youtu.be":
-        video_id = parsed_url.path[1:]
-    else:
-        query_params = parse_qs(parsed_url.query)
-        video_id = query_params.get("v", [None])[0]
-    return video_id
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if host == "youtu.be":
+        return parsed.path[1:] or None
+    if "youtube.com" in host:
+        if parsed.path.startswith(("/shorts/", "/embed/", "/live/")):
+            parts = parsed.path.split("/")
+            return parts[2] if len(parts) > 2 else None
+        return parse_qs(parsed.query).get("v", [None])[0]
+    return None
 
 
 async def search_api(query, is_videoId=False, video=False):
     query = str(query)
     async with aiohttp.ClientSession() as session:
         if is_videoId:
+            endpoint = "ytmp4" if video else "ytmp3"
             async with session.get(
-                f"{API_URL}download/{'ytmp4' if video else 'ytmp3'}?url=https://youtube.com/watch?v="
-                + query
+                f"{API_URL}download/{endpoint}",
+                params={"url": f"https://youtube.com/watch?v={query}"},
             ) as resp:
-                data = await resp.json()
-            if data["success"]:
-                title = data["result"]["title"]
-                thumb_url = data["result"]["thumbnail"]
-                link = data["result"]["download_url"]
-                return title, thumb_url, link
-        else:
-            async with session.get(f"{API_URL}song?query=" + query) as resp:
-                data = await resp.json()
-            if data["status"]:
+                data = await resp.json(content_type=None)
+            if data.get("success"):
                 result = data["result"]
-                if result:
-                    title = result["title"]
-                    thumb_url = result["thumbnail"]
-                    link = (
-                        result["video"]["download_url"]
-                        if video
-                        else result["audio"]["download_url"]
-                    )
-                    return title, thumb_url, link
+                return result["title"], result.get("thumbnail"), result["download_url"]
+        else:
+            async with session.get(
+                f"{API_URL}song", params={"query": query}
+            ) as resp:
+                data = await resp.json(content_type=None)
+            if data.get("status") and data.get("result"):
+                result = data["result"]
+                link = (
+                    result["video"]["download_url"]
+                    if video
+                    else result["audio"]["download_url"]
+                )
+                return result["title"], result.get("thumbnail"), link
     return None, None, None
-
-
-async def download_thumb(thumb_url):
-    if not thumb_url:
-        return None
-    async with aiohttp.ClientSession() as session:
-        async with session.get(thumb_url) as resp:
-            with open("thumbyt.jpg", "wb") as f:
-                f.write(await resp.read())
-    return resize_image("thumbyt.jpg")
 
 
 async def download_file(url, path):
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as resp:
+            if resp.status != 200:
+                raise Exception(f"Download failed (HTTP {resp.status})")
             with open(path, "wb") as f:
-                f.write(await resp.read())
+                async for chunk in resp.content.iter_chunked(1024 * 256):
+                    f.write(chunk)
 
 
-async def download_video(url):
+async def download_thumb(thumb_url, workdir):
+    """Returns (resized_thumb_path, raw_bytes) or (None, None)."""
+    if not thumb_url:
+        return None, None
     try:
-        with YoutubeDL(ydv_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            i_d = info.get("id")
-            title = info.get("title")
-            ext = info.get("ext")
-            thumb_url = info.get("thumbnail")
-            img = await download_thumb(thumb_url)
-            file_path = f"downloads/ytdl/videos/{i_d}.{ext}"
-            ydl.download([url])
-            return file_path, title, img, thumb_url
-    except (DownloadError, ExtractorError):
-        video_id = extract_video_id(url)
-        is_videoId = True if video_id is not None else False
-        video_id = url if video_id is None else video_id
-        title, thumb_url, songlink = await search_api(video_id, is_videoId, True)
-        img = await download_thumb(thumb_url)
-        os.makedirs("downloads/ytdl/videos", exist_ok=True)
-        await download_file(songlink, "downloads/ytdl/videos/" + title + ".mp4")
-        return "downloads/ytdl/videos/" + title + ".mp4", title, img, thumb_url
+        async with aiohttp.ClientSession() as session:
+            async with session.get(thumb_url) as resp:
+                if resp.status != 200:
+                    return None, None
+                raw = await resp.read()
+        path = os.path.join(workdir, "thumb.jpg")
+        with open(path, "wb") as f:
+            f.write(raw)
+        return resize_image(path), raw
+    except Exception:
+        return None, None
 
 
-async def download_music(url):
+def _extract(opts, url):
+    with YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        if info and "entries" in info:
+            entries = [e for e in info["entries"] if e]
+            if not entries:
+                raise ExtractorError("No results found")
+            info = entries[0]
+        return info
+
+
+def _find_file(workdir):
+    for name in sorted(os.listdir(workdir)):
+        if name.startswith("thumb"):
+            continue
+        path = os.path.join(workdir, name)
+        if os.path.isfile(path):
+            return path
+    raise FileNotFoundError("Downloaded file not found")
+
+
+async def _api_fallback(url, workdir, video):
+    video_id = extract_video_id(url)
+    is_videoId = video_id is not None
+    query = video_id if is_videoId else url
+    title, thumb_url, link = await search_api(query, is_videoId, video)
+    if not link:
+        raise Exception("No result found (yt-dlp and API both failed)")
+    img, raw = await download_thumb(thumb_url, workdir)
+    ext = "mp4" if video else "mp3"
+    file_path = os.path.join(workdir, f"{safe_name(title)}.{ext}")
+    await download_file(link, file_path)
+    return file_path, title, img, raw, {}
+
+
+async def download_video(url, workdir):
+    opts = {**ydv_opts, "outtmpl": f"{workdir}/%(id)s.%(ext)s"}
     try:
-        with YoutubeDL(ydm_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            thumb_url = info.get("thumbnail")
-            img = await download_thumb(thumb_url)
-            ydl.download([url])
-            # Search for the file in the audios folder
-            for file in os.listdir("downloads/ytdl/audios"):
-                file_path = os.path.join("downloads/ytdl/audios", file)
-                title = os.path.splitext(file)[0]
-                if os.path.isfile(file_path):
-                    break
-            else:
-                raise FileNotFoundError("Downloaded file not found in audios folder")
-            return file_path, title, img
+        info = await asyncio.to_thread(_extract, opts, url)
+        title = info.get("title")
+        img, raw = await download_thumb(info.get("thumbnail"), workdir)
+        meta = {
+            "duration": int(info.get("duration") or 0),
+            "width": int(info.get("width") or 0),
+            "height": int(info.get("height") or 0),
+        }
+        return _find_file(workdir), title, img, raw, meta
     except (DownloadError, ExtractorError):
-        video_id = extract_video_id(url)
-        is_videoId = True if video_id is not None else False
-        video_id = url if video_id is None else video_id
-        title, thumb_url, songlink = await search_api(video_id, is_videoId)
-        img = await download_thumb(thumb_url)
-        os.makedirs("downloads/ytdl/audios", exist_ok=True)
-        await download_file(songlink, "downloads/ytdl/audios/" + title + ".mp3")
-        return "downloads/ytdl/audios/" + title + ".mp3", title, img
+        return await _api_fallback(url, workdir, video=True)
 
 
+async def download_music(url, workdir):
+    opts = {**ydm_opts, "outtmpl": f"{workdir}/%(title)s.%(ext)s"}
+    try:
+        info = await asyncio.to_thread(_extract, opts, url)
+        title = info.get("title")
+        img, _ = await download_thumb(info.get("thumbnail"), workdir)
+        duration = int(info.get("duration") or 0)
+        return _find_file(workdir), title, img, duration
+    except (DownloadError, ExtractorError):
+        file_path, title, img, _, _ = await _api_fallback(url, workdir, video=False)
+        return file_path, title, img, 0
+
+
+# ---------------------------------------------------------------- handler
 @Client.on_message(filters.command(["ytv", "ytm"], prefix) & filters.me)
 async def ytvm(client: Client, message: Message):
     if len(message.command) < 2:
-        return await message.reply_text("Please provide a YouTube URL to download.")
+        return await message.edit_text("Please provide a YouTube URL or name.")
 
-    if message.command[0] == "ytv":
-        await message.edit_text("Starting Download...")
-        try:
-            url = message.text.split(maxsplit=1)[1]
-            file_path, title, img, thumb_url = await download_video(url)
+    cmd = message.command[0]
+    url = message.text.split(maxsplit=1)[1]
+    workdir = os.path.join(BASE_DIR, uuid.uuid4().hex)
+    os.makedirs(workdir, exist_ok=True)
 
-            new_path = file_path.replace(".webm", ".mp4")
-            os.rename(file_path, new_path)
-            file_path = new_path
+    await message.edit_text("Starting Download...")
+    try:
+        if cmd == "ytv":
+            file_path, title, img, raw, meta = await download_video(url, workdir)
 
             ms = await message.edit_text("Uploading Video...")
             c = time.time()
-
-            cover = None
-            if thumb_url:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(thumb_url) as resp:
-                        cover = BytesIO(await resp.read())
+            cover = BytesIO(raw) if raw else None
 
             await client.send_video(
                 message.chat.id,
                 video=file_path,
                 thumb=img,
                 cover=cover,
+                duration=meta.get("duration", 0),
+                width=meta.get("width", 0),
+                height=meta.get("height", 0),
+                supports_streaming=True,
                 caption=f"<code>{title}</code>",
                 progress=progress,
                 progress_args=(ms, c, "<code>Uploading Video...</code>"),
             )
-            os.remove(file_path)
-            os.remove("thumbyt.jpg")
-            await message.delete()
-        except Exception as e:
-            await message.edit_text(f"An error occurred: {format_exc(e)}")
-    elif message.command[0] == "ytm":
-        await message.edit_text("Starting Download...")
-        try:
-            url = message.text.split(None, 1)[1]
-            file_path, title, img = await download_music(url)
-
-            new_path = file_path.replace(".webm", ".m4a")
-            os.rename(file_path, new_path)
-            file_path = new_path
+        else:
+            file_path, title, img, duration = await download_music(url, workdir)
 
             ms = await message.edit_text("Uploading Audio...")
             c = time.time()
@@ -202,17 +233,17 @@ async def ytvm(client: Client, message: Message):
                 message.chat.id,
                 audio=file_path,
                 thumb=img,
+                duration=duration,
+                title=title,
                 caption=f"<code>{title}</code>",
                 progress=progress,
                 progress_args=(ms, c, "<code>Uploading Audio...</code>"),
             )
-            os.remove(file_path)
-            os.remove("thumbyt.jpg") if os.path.exists("thumbyt.jpg") else None
-            await message.delete()
-        except Exception as e:
-            await message.edit_text(f"An error occurred: {format_exc(e)}")
-    else:
-        return await message.edit_text("Oh Damn Lol")
+        await message.delete()
+    except Exception as e:
+        await message.edit_text(f"An error occurred: {format_exc(e)}")
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 modules_help["ytdl"] = {
